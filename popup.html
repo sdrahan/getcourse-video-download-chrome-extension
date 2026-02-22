@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Captured Playlist URLs</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        width: 420px;
+        max-height: 560px;
+        padding: 12px;
+        background: #f7fafc;
+        color: #0f172a;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      #clearButton {
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        color: #0f172a;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      #clearButton:hover {
+        background: #f1f5f9;
+      }
+
+      #status {
+        margin: 0 0 6px 0;
+        font-size: 12px;
+        color: #475569;
+      }
+
+      #downloadStatus {
+        margin: 0 0 10px 0;
+        font-size: 12px;
+        color: #0f766e;
+        min-height: 16px;
+      }
+
+      #downloadStatus.error {
+        color: #b91c1c;
+      }
+
+      #list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .entry {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 10px;
+      }
+
+      .entryTop {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .actions {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .url {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.35;
+        word-break: break-all;
+      }
+
+      .copyButton {
+        flex-shrink: 0;
+        border: 1px solid #0f766e;
+        background: #14b8a6;
+        color: #ffffff;
+        border-radius: 6px;
+        padding: 5px 9px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .copyButton:hover {
+        background: #0d9488;
+      }
+
+      .downloadButton {
+        flex-shrink: 0;
+        border: 1px solid #1d4ed8;
+        background: #2563eb;
+        color: #ffffff;
+        border-radius: 6px;
+        padding: 5px 9px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .downloadButton:hover {
+        background: #1d4ed8;
+      }
+
+      .removeButton {
+        flex-shrink: 0;
+        border: 1px solid #94a3b8;
+        background: #f8fafc;
+        color: #334155;
+        border-radius: 6px;
+        padding: 5px 9px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .removeButton:hover {
+        background: #f1f5f9;
+      }
+
+      .stopButton {
+        flex-shrink: 0;
+        border: 1px solid #b91c1c;
+        background: #dc2626;
+        color: #ffffff;
+        border-radius: 6px;
+        padding: 5px 9px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .stopButton:hover {
+        background: #b91c1c;
+      }
+
+      .downloadButton:disabled,
+      .removeButton:disabled,
+      .stopButton:disabled,
+      .copyButton:disabled {
+        opacity: 0.7;
+        cursor: wait;
+      }
+
+      .meta {
+        margin-top: 6px;
+        font-size: 11px;
+        color: #64748b;
+      }
+
+      .empty {
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+        padding: 12px;
+        font-size: 12px;
+        color: #64748b;
+        background: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Captured Playlist URLs</h1>
+      <button id="clearButton" type="button">Clear</button>
+    </div>
+    <p id="status">0 captured</p>
+    <p id="downloadStatus"></p>
+    <ul id="list"></ul>
+    <script src="popup.js"></script>
+  </body>
+</html>

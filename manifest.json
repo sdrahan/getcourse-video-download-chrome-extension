@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Playlist Media URL Capture",
+  "description": "Observes playlist media requests and shows captured URLs in the popup.",
+  "version": "1.0.0",
+  "permissions": ["webRequest", "storage", "downloads", "activeTab", "scripting", "offscreen"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Captured Playlist URLs",
+    "default_popup": "popup.html"
+  }
+}
