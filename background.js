@@ -41,7 +41,7 @@ function isVimeoCdnHost(hostname) {
 function extractVimeoMediaInfoFromParsedUrl(parsed) {
   const isVimeoPlaylistJson =
     isVimeoCdnHost(parsed.hostname) &&
-    parsed.pathname.includes("/v2/playlist/") &&
+    parsed.pathname.includes("/v2/playlist/av/") &&
     parsed.pathname.endsWith("/playlist.json");
   if (!isVimeoPlaylistJson) {
     return null;
@@ -152,6 +152,143 @@ async function readLessonTitleFromTab(tabId) {
     return typeof results[0]?.result === "string" ? results[0].result.trim() : "";
   } catch {
     return "";
+  }
+}
+
+async function readVimeoPlayerPageUrlFromTab(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    return "";
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const candidates = Array.from(document.querySelectorAll("iframe[src]"))
+          .map((el) => el.getAttribute("src") || "")
+          .map((src) => src.trim())
+          .filter((src) => /^https:\/\/player\.vimeo\.com\/video\/\d+/i.test(src));
+        return candidates[0] || "";
+      }
+    });
+    return typeof results[0]?.result === "string" ? results[0].result.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function pickVimeoCdnUrlFromBlock(block) {
+  if (!block || typeof block !== "object" || !block.cdns || typeof block.cdns !== "object") {
+    return "";
+  }
+
+  const pickEntry = (entry) => {
+    if (!entry || typeof entry !== "object") {
+      return "";
+    }
+    if (typeof entry.avc_url === "string" && entry.avc_url) {
+      return entry.avc_url;
+    }
+    if (typeof entry.url === "string" && entry.url) {
+      return entry.url;
+    }
+    return "";
+  };
+
+  if (typeof block.default_cdn === "string" && block.cdns[block.default_cdn]) {
+    const url = pickEntry(block.cdns[block.default_cdn]);
+    if (url) {
+      return url;
+    }
+  }
+
+  for (const entry of Object.values(block.cdns)) {
+    const url = pickEntry(entry);
+    if (url) {
+      return url;
+    }
+  }
+
+  return "";
+}
+
+async function readVimeoSourcesFromTab(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    return null;
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: () => {
+        try {
+          if (location.hostname !== "player.vimeo.com") {
+            return null;
+          }
+          const config = window.playerConfig || null;
+          if (!config || !config.request || !config.request.files) {
+            return null;
+          }
+
+          const files = config.request.files;
+          const progressive = Array.isArray(files.progressive)
+            ? files.progressive
+                .filter((entry) => entry && typeof entry.url === "string" && entry.url)
+                .map((entry) => ({
+                  url: entry.url,
+                  height: Number(entry.height) || -1,
+                  bitrate: Number(entry.bitrate) || -1,
+                  mime: typeof entry.mime === "string" ? entry.mime : ""
+                }))
+            : [];
+
+          return {
+            playerPageUrl: location.href,
+            progressive,
+            hls: files.hls || null,
+            dash: files.dash || null
+          };
+        } catch {
+          return null;
+        }
+      }
+    });
+
+    const frameResult = results.find((entry) => entry && entry.result && typeof entry.result === "object");
+    if (!frameResult) {
+      return null;
+    }
+
+    const data = frameResult.result;
+    const hlsUrl = pickVimeoCdnUrlFromBlock(data.hls);
+    const dashUrl = pickVimeoCdnUrlFromBlock(data.dash);
+    const progressiveList = Array.isArray(data.progressive) ? data.progressive : [];
+    const progressive = progressiveList
+      .slice()
+      .sort((a, b) => {
+        const h = (Number(b.height) || -1) - (Number(a.height) || -1);
+        if (h !== 0) {
+          return h;
+        }
+        return (Number(b.bitrate) || -1) - (Number(a.bitrate) || -1);
+      })[0];
+
+    return {
+      playerPageUrl: typeof data.playerPageUrl === "string" ? data.playerPageUrl : "",
+      progressive:
+        progressive && typeof progressive.url === "string"
+          ? {
+              url: progressive.url,
+              mimeType: progressive.mime || "video/mp4",
+              fileExtension: "mp4"
+            }
+          : null,
+      hlsUrl,
+      dashUrl
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -301,7 +438,8 @@ function parseMatchingInfo(urlString) {
     return vimeoManifestInfo;
   }
 
-  return extractVimeoPlayerPageInfoFromParsedUrl(parsed);
+  // Capture only canonical Vimeo A/V manifests to avoid duplicate short/auxiliary entries.
+  return null;
 }
 
 async function getCapturedItems() {
@@ -423,6 +561,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!urlString) {
         throw new Error("Missing URL for download.");
       }
+      const tabId = Number.isInteger(message.tabId) ? message.tabId : null;
+      const pageUrl = typeof message.pageUrl === "string" ? message.pageUrl : "";
 
       const mediaKey = getMediaKeyFromUrl(urlString);
       await updateDownloadState(mediaKey, {
@@ -434,10 +574,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       await ensureOffscreenDocument();
 
+      const mediaInfo = deriveMediaInfoFromUrl(urlString);
+      const vimeoPlayerPageUrl =
+        mediaInfo && mediaInfo.sourceType === "vimeo" && Number.isInteger(tabId)
+          ? await readVimeoPlayerPageUrlFromTab(tabId)
+          : "";
+      const vimeoEmbeddedSources =
+        mediaInfo && mediaInfo.sourceType === "vimeo" && Number.isInteger(tabId) ? await readVimeoSourcesFromTab(tabId) : null;
+
       await chrome.runtime.sendMessage({
         type: "OFFSCREEN_START_DOWNLOAD",
         url: urlString,
-        lessonTitle: typeof message.lessonTitle === "string" ? message.lessonTitle : ""
+        lessonTitle: typeof message.lessonTitle === "string" ? message.lessonTitle : "",
+        vimeoPlayerPageUrl,
+        pageUrl,
+        vimeoEmbeddedSources
       });
 
       sendResponse({

@@ -91,7 +91,9 @@ function buildDownloadMetaText(item, mediaKey) {
     return `${capturedAtText} | Download: ${state.filename || "Started in Downloads"}`;
   }
   if (state.state === "error") {
-    return `${capturedAtText} | Download error: ${state.error || state.message || "Unknown error"}`;
+    const base = `${capturedAtText} | Download error: ${state.error || state.message || "Unknown error"}`;
+    const withDebug = state.debugTrace ? `${base} | Debug available` : base;
+    return state.ffmpegCommand ? `${withDebug} | FFmpeg command available` : withDebug;
   }
 
   return capturedAtText;
@@ -127,6 +129,24 @@ async function readLessonTitleFromActiveTab() {
     return typeof results[0]?.result === "string" ? results[0].result.trim() : "";
   } catch (error) {
     console.warn("Could not read lesson title from active tab", error);
+    return "";
+  }
+}
+
+async function readActiveTabId() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tabs[0] && typeof tabs[0].id === "number" ? tabs[0].id : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readActiveTabUrl() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tabs[0] && typeof tabs[0].url === "string" ? tabs[0].url : "";
+  } catch {
     return "";
   }
 }
@@ -284,7 +304,9 @@ function render() {
         const response = await sendRuntimeMessage({
           type: "START_DOWNLOAD",
           url: item.url,
-          lessonTitle
+          lessonTitle,
+          tabId: await readActiveTabId(),
+          pageUrl: await readActiveTabUrl()
         });
 
         if (!response || !response.ok) {
@@ -340,6 +362,48 @@ function render() {
       }
     });
     actions.appendChild(removeButton);
+
+    if (state?.state === "error" && typeof state.debugTrace === "string" && state.debugTrace.trim()) {
+      const copyDebugButton = document.createElement("button");
+      copyDebugButton.type = "button";
+      copyDebugButton.className = "copyButton";
+      copyDebugButton.textContent = "Copy debug";
+      copyDebugButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(state.debugTrace);
+          copyDebugButton.textContent = "Copied";
+          setTimeout(() => {
+            copyDebugButton.textContent = "Copy debug";
+          }, 1000);
+          setDownloadStatus("Debug log copied.");
+        } catch (error) {
+          console.error("Debug clipboard write failed", error);
+          setDownloadStatus(`Failed to copy debug log: ${error.message}`, true);
+        }
+      });
+      actions.appendChild(copyDebugButton);
+    }
+
+    if (state?.state === "error" && typeof state.ffmpegCommand === "string" && state.ffmpegCommand.trim()) {
+      const copyFfmpegButton = document.createElement("button");
+      copyFfmpegButton.type = "button";
+      copyFfmpegButton.className = "copyButton";
+      copyFfmpegButton.textContent = "Copy ffmpeg";
+      copyFfmpegButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(state.ffmpegCommand);
+          copyFfmpegButton.textContent = "Copied";
+          setTimeout(() => {
+            copyFfmpegButton.textContent = "Copy ffmpeg";
+          }, 1000);
+          setDownloadStatus("ffmpeg command copied. Run it in terminal.");
+        } catch (error) {
+          console.error("ffmpeg clipboard write failed", error);
+          setDownloadStatus(`Failed to copy ffmpeg command: ${error.message}`, true);
+        }
+      });
+      actions.appendChild(copyFfmpegButton);
+    }
 
     top.appendChild(actions);
 

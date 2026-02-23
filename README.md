@@ -6,8 +6,7 @@ This extension passively observes outgoing requests and records playlist-media U
 - Path ends with numeric resolution segment (example: `/360`, `/720`, `/1080`)
 - Query includes: `user-id`
 - URL also passes a configurable `"video"` predicate
-- Vimeo adaptive manifest URLs: `https://*.vimeocdn.com/.../v2/playlist/.../playlist.json`
-- Vimeo player page URLs: `https://player.vimeo.com/video/<videoId>`
+- Vimeo adaptive A/V manifest URLs: `https://*.vimeocdn.com/.../v2/playlist/av/.../playlist.json`
 
 Captured URLs are shown in the popup with copy/download controls, lesson context (when available), and item removal.
 
@@ -58,16 +57,16 @@ If you want to force a test quickly, trigger a request in any tab to a URL like:
   - Save into Chrome Downloads via `chrome.downloads`.
 - Vimeo adaptive flow:
   - Capture the Vimeo manifest URL ending in `playlist.json`.
-  - Parse JSON, select highest-quality exposed video track, fetch init+segments, and assemble `.mp4`.
+  - Parse JSON with muxed-first selection (`muxed` -> `audio_video` -> video-with-embedded-audio), then fetch init+segments and assemble `.mp4`.
+  - If JSON exposes separate A/V only, auto-fallback to Vimeo HLS TS (`playlist.m3u8?sf=ts`) and download merged `.ts` segments.
   - Do not use `.../v2/range/...` chunk URLs directly; they are partial byte-range fragments.
-- Vimeo player-page fallback:
-  - If source is `player.vimeo.com/video/<id>`, parse `window.playerConfig` from page HTML.
-  - Resolve signed DASH/HLS manifest URL from `request.files` and download from that manifest.
+- If source is a Vimeo player page URL, downloader first tries `request.files.progressive` MP4, then falls back to DASH/HLS manifest.
+- To reduce duplicate/short auxiliary entries, popup capture intentionally keeps only Vimeo A/V `playlist.json` URLs.
 - While running, each item shows a **Stop** button. It cancels the in-progress job and attempts to cancel any started Chrome download entry.
 - Filename rule:
   - If page has `.lesson-title-value`, output filename is: `<lesson title> <video_id>.<ext>`
   - If not found, output filename is: `<video_id>.<ext>`
-  - `<ext>` is `.ts` for custom playlists and `.mp4` for Vimeo manifests
+  - `<ext>` is `.ts` for custom playlists and Vimeo TS fallback; `.mp4` for Vimeo progressive/muxed manifests
   - `video_id` is derived from playlist identity (`/api/playlist/media/.../<resolution>` or Vimeo manifest identifiers)
 
 Note: merge is done in extension memory before download starts, so very large videos can be memory-heavy.
