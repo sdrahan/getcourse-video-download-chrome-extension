@@ -452,6 +452,31 @@ async function runEmbeddedFfmpegMuxFromBuffers(videoBuffer, audioBuffer, outputF
   return asArrayBuffer(output);
 }
 
+async function runEmbeddedFfmpegRemuxTsToMp4(tsBuffer, outputFilename, signal, debugLog) {
+  throwIfAborted(signal);
+  const ffmpeg = await ensureEmbeddedFfmpeg(debugLog);
+  throwIfAborted(signal);
+
+  const tsInput = "input.ts";
+  const outputFile = sanitizeFilePart(outputFilename || "output.mp4") || "output.mp4";
+  await ffmpeg.writeFile(tsInput, new Uint8Array(tsBuffer), { signal });
+
+  const args = ["-i", tsInput, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", outputFile];
+  const ret = await ffmpeg.exec(args, -1, { signal });
+  if (ret !== 0) {
+    throw new Error(`embedded ffmpeg exited with code ${ret}`);
+  }
+
+  const output = await ffmpeg.readFile(outputFile, "binary", { signal });
+  try {
+    await ffmpeg.deleteFile(tsInput);
+    await ffmpeg.deleteFile(outputFile);
+  } catch {
+    // Ignore cleanup failures.
+  }
+  return asArrayBuffer(output);
+}
+
 async function fetchText(urlString, signal) {
   throwIfAborted(signal);
   const response = await fetch(urlString, {
@@ -1430,6 +1455,30 @@ async function startDownloadJob(urlString, lessonTitle, options = {}) {
       const inferred = inferMimeAndExtensionFromSegmentUrls(segmentUrls, fallbackMimeType, fallbackExtension);
       mimeType = inferred.mimeType;
       fileExtension = inferred.fileExtension;
+    }
+
+    if (mediaInfo.sourceType === "custom" && fileExtension === "ts" && chunks.length > 0) {
+      debug("Attempting embedded ffmpeg remux TS -> MP4 for custom source.");
+      await reportStatus(mediaKey, {
+        state: "running",
+        message: "Remuxing TS to MP4..."
+      });
+      try {
+        const tsBuffer = concatArrayBuffers(chunks);
+        const mp4Name = buildDownloadFilename(urlString, lessonTitle, "mp4");
+        const mp4Buffer = await runEmbeddedFfmpegRemuxTsToMp4(tsBuffer, mp4Name, signal, debug);
+        chunks = [mp4Buffer];
+        segmentCount = 1;
+        mimeType = "video/mp4";
+        fileExtension = "mp4";
+        debug("TS -> MP4 remux succeeded.");
+      } catch (remuxError) {
+        debug(`TS -> MP4 remux failed, keeping TS output: ${String(remuxError?.message || remuxError)}`);
+        await reportStatus(mediaKey, {
+          state: "running",
+          message: "TS->MP4 remux failed, keeping TS format..."
+        });
+      }
     }
 
     throwIfAborted(signal);
