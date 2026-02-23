@@ -1,5 +1,9 @@
+import { FFmpeg } from "./vendor/ffmpeg/esm/index.js";
+
 const MAX_SEGMENT_RETRIES = 12;
 const activeDownloads = new Map();
+let ffmpegLoader = null;
+let ffmpegInstance = null;
 
 class CancelledError extends Error {
   constructor(message) {
@@ -212,6 +216,240 @@ function buildFfmpegCommand(inputUrl, outputFilename) {
   return `ffmpeg -hide_banner -loglevel warning -i ${shellQuote(
     inputUrl
   )} -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart "${outputPath}"`;
+}
+
+function asArrayBuffer(data) {
+  if (data instanceof ArrayBuffer) {
+    return data;
+  }
+  if (data instanceof Uint8Array) {
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  }
+  throw new Error("Unexpected ffmpeg output type.");
+}
+
+async function ensureEmbeddedFfmpeg(debugLog) {
+  if (ffmpegInstance && ffmpegInstance.loaded) {
+    return ffmpegInstance;
+  }
+
+  if (!ffmpegLoader) {
+    ffmpegLoader = (async () => {
+      const ffmpeg = new FFmpeg();
+      if (typeof debugLog === "function") {
+        ffmpeg.on("log", ({ message }) => {
+          if (message && /(error|warning|http|https|m3u8|mp4)/i.test(message)) {
+            debugLog(`ffmpeg: ${String(message).slice(0, 260)}`);
+          }
+        });
+      }
+
+      const coreURL = chrome.runtime.getURL("vendor/ffmpeg/core/ffmpeg-core.js");
+      const wasmURL = chrome.runtime.getURL("vendor/ffmpeg/core/ffmpeg-core.wasm");
+      await ffmpeg.load({
+        coreURL,
+        wasmURL
+      });
+      ffmpegInstance = ffmpeg;
+      return ffmpeg;
+    })().catch((error) => {
+      ffmpegLoader = null;
+      throw error;
+    });
+  }
+
+  return ffmpegLoader;
+}
+
+async function runEmbeddedFfmpegMux(inputUrl, outputFilename, signal, debugLog) {
+  throwIfAborted(signal);
+  const ffmpeg = await ensureEmbeddedFfmpeg(debugLog);
+  throwIfAborted(signal);
+
+  const outputFile = sanitizeFilePart(outputFilename || "output.mp4") || "output.mp4";
+  const args = [
+    "-protocol_whitelist",
+    "file,http,https,tcp,tls,crypto,data",
+    "-allowed_extensions",
+    "ALL",
+    "-i",
+    inputUrl,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0",
+    "-c",
+    "copy",
+    "-movflags",
+    "+faststart",
+    outputFile
+  ];
+
+  const ret = await ffmpeg.exec(args, -1, { signal });
+  if (ret !== 0) {
+    throw new Error(`embedded ffmpeg exited with code ${ret}`);
+  }
+
+  const output = await ffmpeg.readFile(outputFile);
+  try {
+    await ffmpeg.deleteFile(outputFile);
+  } catch {
+    // Ignore cleanup failures.
+  }
+  return asArrayBuffer(output);
+}
+
+function getTrackBaseCandidates(track, manifestBase, playlistUrl) {
+  const trackBase = resolveUrl(track?.base_url || "", manifestBase) || manifestBase;
+  return [trackBase, manifestBase, playlistUrl];
+}
+
+async function collectTrackChunks(track, manifestBase, playlistUrl, signal, progressCallback, progressPrefix) {
+  const baseCandidates = getTrackBaseCandidates(track, manifestBase, playlistUrl);
+  const chunks = [];
+
+  if (typeof track?.init_segment === "string" && track.init_segment.length > 0) {
+    chunks.push(decodeBase64ToArrayBuffer(track.init_segment));
+  }
+
+  const segmentUrls = [];
+  if (Array.isArray(track?.segments)) {
+    for (const segment of track.segments) {
+      throwIfAborted(signal);
+      const part = getSegmentUrlPart(segment);
+      if (!part) {
+        continue;
+      }
+      const resolved = resolveWithFallback(part, baseCandidates);
+      if (resolved) {
+        segmentUrls.push(resolved);
+      }
+    }
+  }
+
+  if (segmentUrls.length === 0 && typeof track?.url === "string") {
+    const directTrackUrl = resolveWithFallback(track.url, baseCandidates);
+    if (directTrackUrl) {
+      segmentUrls.push(directTrackUrl);
+    }
+  }
+
+  if (segmentUrls.length === 0) {
+    throw new Error("Track has no usable segment URLs.");
+  }
+
+  for (let i = 0; i < segmentUrls.length; i += 1) {
+    throwIfAborted(signal);
+    if (typeof progressCallback === "function") {
+      await progressCallback(`${progressPrefix} ${i + 1}/${segmentUrls.length}...`);
+    }
+    const buffer = await fetchSegmentWithRetry(segmentUrls[i], MAX_SEGMENT_RETRIES, signal);
+    chunks.push(buffer);
+  }
+
+  return {
+    chunks,
+    segmentCount: segmentUrls.length
+  };
+}
+
+function concatArrayBuffers(buffers) {
+  const total = buffers.reduce((acc, buf) => acc + (buf?.byteLength || 0), 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const buf of buffers) {
+    const view = new Uint8Array(buf);
+    out.set(view, offset);
+    offset += view.byteLength;
+  }
+  return out;
+}
+
+async function resolveVimeoSeparateTracksFromPlaylistJson(playlistUrl, signal, progressCallback) {
+  const playlistText = await fetchText(playlistUrl, signal);
+  let manifest;
+  try {
+    manifest = JSON.parse(playlistText);
+  } catch {
+    throw new Error("Vimeo playlist response is not valid JSON.");
+  }
+
+  const videoTracks = sortTracksByQuality((Array.isArray(manifest?.video) ? manifest.video : []).filter(hasUsableTrackSource));
+  const audioTracks = sortTracksByQuality((Array.isArray(manifest?.audio) ? manifest.audio : []).filter(hasUsableTrackSource));
+  if (videoTracks.length === 0 || audioTracks.length === 0) {
+    throw new Error("Vimeo separate A/V manifest does not provide both video and audio tracks.");
+  }
+
+  const bestVideo = videoTracks[0];
+  const bestAudio = audioTracks[0];
+  const manifestBase = resolveUrl(manifest.base_url || "", playlistUrl) || playlistUrl;
+
+  const videoResult = await collectTrackChunks(
+    bestVideo,
+    manifestBase,
+    playlistUrl,
+    signal,
+    progressCallback,
+    "Downloading video track segments"
+  );
+  const audioResult = await collectTrackChunks(
+    bestAudio,
+    manifestBase,
+    playlistUrl,
+    signal,
+    progressCallback,
+    "Downloading audio track segments"
+  );
+
+  return {
+    videoBuffer: concatArrayBuffers(videoResult.chunks),
+    audioBuffer: concatArrayBuffers(audioResult.chunks),
+    videoSegmentCount: videoResult.segmentCount,
+    audioSegmentCount: audioResult.segmentCount
+  };
+}
+
+async function runEmbeddedFfmpegMuxFromBuffers(videoBuffer, audioBuffer, outputFilename, signal, debugLog) {
+  throwIfAborted(signal);
+  const ffmpeg = await ensureEmbeddedFfmpeg(debugLog);
+  throwIfAborted(signal);
+
+  const videoInput = "input_video.mp4";
+  const audioInput = "input_audio.m4a";
+  const outputFile = sanitizeFilePart(outputFilename || "output.mp4") || "output.mp4";
+  await ffmpeg.writeFile(videoInput, new Uint8Array(videoBuffer), { signal });
+  await ffmpeg.writeFile(audioInput, new Uint8Array(audioBuffer), { signal });
+
+  const args = [
+    "-i",
+    videoInput,
+    "-i",
+    audioInput,
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
+    "-c",
+    "copy",
+    "-movflags",
+    "+faststart",
+    outputFile
+  ];
+
+  const ret = await ffmpeg.exec(args, -1, { signal });
+  if (ret !== 0) {
+    throw new Error(`embedded ffmpeg exited with code ${ret}`);
+  }
+
+  const output = await ffmpeg.readFile(outputFile, "binary", { signal });
+  try {
+    await ffmpeg.deleteFile(videoInput);
+    await ffmpeg.deleteFile(audioInput);
+    await ffmpeg.deleteFile(outputFile);
+  } catch {
+    // Ignore cleanup failures.
+  }
+  return asArrayBuffer(output);
 }
 
 async function fetchText(urlString, signal) {
@@ -1111,28 +1349,67 @@ async function startDownloadJob(urlString, lessonTitle, options = {}) {
             if (ffmpegInputUrl) {
               const ffmpegOutput = buildDownloadFilename(urlString, lessonTitle, "mp4");
               const ffmpegCommand = buildFfmpegCommand(ffmpegInputUrl, ffmpegOutput);
-              debug(`Separate A/V requires ffmpeg mux. Command prepared for ${ffmpegOutput}`);
-              throw new FfmpegRequiredError(
-                "Separate Vimeo audio/video detected. Use local ffmpeg command (Copy ffmpeg) to mux with audio.",
-                ffmpegCommand
-              );
+              debug(`Separate A/V requires mux. Downloading separate tracks for embedded ffmpeg: ${ffmpegOutput}`);
+              try {
+                await reportStatus(mediaKey, {
+                  state: "running",
+                  message: "Downloading separate audio/video tracks..."
+                });
+                const separateTracks = await resolveVimeoSeparateTracksFromPlaylistJson(
+                  resolvedSourceUrl,
+                  signal,
+                  async (progressMessage) => {
+                    await reportStatus(mediaKey, {
+                      state: "running",
+                      message: progressMessage
+                    });
+                  }
+                );
+                debug(
+                  `Downloaded separate tracks (video segments=${separateTracks.videoSegmentCount}, audio segments=${separateTracks.audioSegmentCount})`
+                );
+                await reportStatus(mediaKey, {
+                  state: "running",
+                  message: "Muxing audio+video with embedded ffmpeg..."
+                });
+                const mergedOutput = await runEmbeddedFfmpegMuxFromBuffers(
+                  separateTracks.videoBuffer,
+                  separateTracks.audioBuffer,
+                  ffmpegOutput,
+                  signal,
+                  debug
+                );
+                chunks = [mergedOutput];
+                segmentCount = 1;
+                mimeType = "video/mp4";
+                fileExtension = "mp4";
+                resolvedViaPlayerConfig = true;
+              } catch (embeddedMuxError) {
+                debug(`Embedded ffmpeg mux failed: ${String(embeddedMuxError?.message || embeddedMuxError)}`);
+                throw new FfmpegRequiredError(
+                  "Embedded ffmpeg mux failed. Use local ffmpeg command (Copy ffmpeg).",
+                  ffmpegCommand
+                );
+              }
             }
 
-            debug(`Falling back to derived HLS TS URL from playlist JSON ${safeUrlForLog(resolvedSourceUrl)}`);
-            await reportStatus(mediaKey, {
-              state: "running",
-              message: "Separate A/V detected. Trying Vimeo HLS TS fallback..."
-            });
-            const fallback = await resolveVimeoViaHlsTsFallback(resolvedSourceUrl, signal, async (index, total) => {
+            if (!resolvedViaPlayerConfig) {
+              debug(`Falling back to derived HLS TS URL from playlist JSON ${safeUrlForLog(resolvedSourceUrl)}`);
               await reportStatus(mediaKey, {
                 state: "running",
-                message: `Downloading fallback TS segments ${index}/${total}...`
+                message: "Separate A/V detected. Trying Vimeo HLS TS fallback..."
               });
-            });
-            chunks = fallback.chunks;
-            segmentCount = fallback.segmentCount;
-            mimeType = fallback.mimeType;
-            fileExtension = fallback.fileExtension;
+              const fallback = await resolveVimeoViaHlsTsFallback(resolvedSourceUrl, signal, async (index, total) => {
+                await reportStatus(mediaKey, {
+                  state: "running",
+                  message: `Downloading fallback TS segments ${index}/${total}...`
+                });
+              });
+              chunks = fallback.chunks;
+              segmentCount = fallback.segmentCount;
+              mimeType = fallback.mimeType;
+              fileExtension = fallback.fileExtension;
+            }
           }
         } else {
           throw error;

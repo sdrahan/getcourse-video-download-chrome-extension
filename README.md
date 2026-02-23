@@ -58,7 +58,8 @@ If you want to force a test quickly, trigger a request in any tab to a URL like:
 - Vimeo adaptive flow:
   - Capture the Vimeo manifest URL ending in `playlist.json`.
   - Parse JSON with muxed-first selection (`muxed` -> `audio_video` -> video-with-embedded-audio), then fetch init+segments and assemble `.mp4`.
-  - If JSON exposes separate A/V only, auto-fallback to Vimeo HLS TS (`playlist.m3u8?sf=ts`) and download merged `.ts` segments.
+  - If JSON exposes separate A/V only, extension tries embedded `ffmpeg.wasm` muxing first (audio+video into `.mp4`).
+  - If embedded muxing fails, popup exposes **Copy ffmpeg** command for local terminal mux as fallback.
   - Do not use `.../v2/range/...` chunk URLs directly; they are partial byte-range fragments.
 - If source is a Vimeo player page URL, downloader first tries `request.files.progressive` MP4, then falls back to DASH/HLS manifest.
 - To reduce duplicate/short auxiliary entries, popup capture intentionally keeps only Vimeo A/V `playlist.json` URLs.
@@ -66,7 +67,7 @@ If you want to force a test quickly, trigger a request in any tab to a URL like:
 - Filename rule:
   - If page has `.lesson-title-value`, output filename is: `<lesson title> <video_id>.<ext>`
   - If not found, output filename is: `<video_id>.<ext>`
-  - `<ext>` is `.ts` for custom playlists and Vimeo TS fallback; `.mp4` for Vimeo progressive/muxed manifests
+  - `<ext>` is `.ts` for custom playlists; `.mp4` for Vimeo progressive/muxed/ffmpeg-muxed outputs
   - `video_id` is derived from playlist identity (`/api/playlist/media/.../<resolution>` or Vimeo manifest identifiers)
 
 Note: merge is done in extension memory before download starts, so very large videos can be memory-heavy.
