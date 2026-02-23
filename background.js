@@ -14,7 +14,7 @@ function passesVideoPredicate(urlString) {
   return urlString.toLowerCase().includes(REQUIRED_SUBSTRING);
 }
 
-function extractMediaInfoFromPath(pathname) {
+function extractCustomMediaInfoFromPath(pathname) {
   const marker = "/api/playlist/media/";
   const markerIndex = pathname.indexOf(marker);
   if (markerIndex === -1) {
@@ -29,7 +29,52 @@ function extractMediaInfoFromPath(pathname) {
 
   return {
     mediaKey: tailMatch[1],
-    resolution: tailMatch[2]
+    resolution: tailMatch[2],
+    sourceType: "custom"
+  };
+}
+
+function isVimeoCdnHost(hostname) {
+  return /(^|\.)vimeocdn\.com$/i.test(hostname);
+}
+
+function extractVimeoMediaInfoFromParsedUrl(parsed) {
+  const isVimeoPlaylistJson =
+    isVimeoCdnHost(parsed.hostname) &&
+    parsed.pathname.includes("/v2/playlist/") &&
+    parsed.pathname.endsWith("/playlist.json");
+  if (!isVimeoPlaylistJson) {
+    return null;
+  }
+
+  const videoIdFromPath = parsed.pathname.match(/\/video\/(\d+)/)?.[1] || "";
+  const videoIdFromQuery = parsed.searchParams.get("videoId") || "";
+  const eidFromPath = parsed.pathname.match(/\/(e[0-9a-f-]{8,})\//i)?.[1] || "";
+  const mediaSeed = videoIdFromPath || videoIdFromQuery || eidFromPath || parsed.pathname;
+  const mediaKey = `vimeo:${mediaSeed}`;
+
+  return {
+    mediaKey,
+    resolution: "adaptive",
+    sourceType: "vimeo"
+  };
+}
+
+function extractVimeoPlayerPageInfoFromParsedUrl(parsed) {
+  if (parsed.hostname !== "player.vimeo.com") {
+    return null;
+  }
+
+  const match = parsed.pathname.match(/^\/video\/(\d+)\/?$/);
+  if (!match) {
+    return null;
+  }
+
+  const videoId = match[1];
+  return {
+    mediaKey: `vimeo:${videoId}`,
+    resolution: "adaptive",
+    sourceType: "vimeo-player-page"
   };
 }
 
@@ -41,7 +86,17 @@ function parseResolutionNumber(value) {
 function deriveMediaInfoFromUrl(urlString) {
   try {
     const parsed = new URL(urlString);
-    return extractMediaInfoFromPath(parsed.pathname);
+    const customInfo = extractCustomMediaInfoFromPath(parsed.pathname);
+    if (customInfo) {
+      return customInfo;
+    }
+
+    const vimeoManifestInfo = extractVimeoMediaInfoFromParsedUrl(parsed);
+    if (vimeoManifestInfo) {
+      return vimeoManifestInfo;
+    }
+
+    return extractVimeoPlayerPageInfoFromParsedUrl(parsed);
   } catch {
     return null;
   }
@@ -228,27 +283,25 @@ function parseMatchingInfo(urlString) {
     return null;
   }
 
-  if (!parsed.pathname.includes("/api/playlist/media/")) {
-    return null;
+  const customInfo = extractCustomMediaInfoFromPath(parsed.pathname);
+  if (customInfo) {
+    if (!parsed.searchParams.has("user-id")) {
+      return null;
+    }
+
+    if (!passesVideoPredicate(urlString)) {
+      return null;
+    }
+
+    return customInfo;
   }
 
-  const mediaInfo = extractMediaInfoFromPath(parsed.pathname);
-  if (!mediaInfo) {
-    return null;
+  const vimeoManifestInfo = extractVimeoMediaInfoFromParsedUrl(parsed);
+  if (vimeoManifestInfo) {
+    return vimeoManifestInfo;
   }
 
-  if (!parsed.searchParams.has("user-id")) {
-    return null;
-  }
-
-  if (!passesVideoPredicate(urlString)) {
-    return null;
-  }
-
-  return {
-    mediaKey: mediaInfo.mediaKey,
-    resolution: mediaInfo.resolution
-  };
+  return extractVimeoPlayerPageInfoFromParsedUrl(parsed);
 }
 
 async function getCapturedItems() {

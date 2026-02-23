@@ -6,6 +6,8 @@ This extension passively observes outgoing requests and records playlist-media U
 - Path ends with numeric resolution segment (example: `/360`, `/720`, `/1080`)
 - Query includes: `user-id`
 - URL also passes a configurable `"video"` predicate
+- Vimeo adaptive manifest URLs: `https://*.vimeocdn.com/.../v2/playlist/.../playlist.json`
+- Vimeo player page URLs: `https://player.vimeo.com/video/<videoId>`
 
 Captured URLs are shown in the popup with copy/download controls, lesson context (when available), and item removal.
 
@@ -23,7 +25,7 @@ Captured URLs are shown in the popup with copy/download controls, lesson context
 2. Start video playback.
 3. Open the extension popup.
 4. Confirm captured entries appear (most recent first).
-5. Use **Copy** on any row, **Download** to assemble and save the video as `.ts`, **Stop** to interrupt an active download, **Remove** to delete a single item, or **Clear** to reset the session list.
+5. Use **Copy** on any row, **Download** to assemble and save the video (`.ts` for custom playlists, `.mp4` for Vimeo manifests), **Stop** to interrupt an active download, **Remove** to delete a single item, or **Clear** to reset the session list.
 
 If you want to force a test quickly, trigger a request in any tab to a URL like:
 `https://example-cdn.test/api/playlist/media/abc/def/720?user-cdn=cdnvideo&user-id=123`
@@ -54,11 +56,19 @@ If you want to force a test quickly, trigger a request in any tab to a URL like:
   - Otherwise take the last media-playlist line and fetch it.
   - Download all media segment URLs in order (with retries) and merge to one `.ts`.
   - Save into Chrome Downloads via `chrome.downloads`.
+- Vimeo adaptive flow:
+  - Capture the Vimeo manifest URL ending in `playlist.json`.
+  - Parse JSON, select highest-quality exposed video track, fetch init+segments, and assemble `.mp4`.
+  - Do not use `.../v2/range/...` chunk URLs directly; they are partial byte-range fragments.
+- Vimeo player-page fallback:
+  - If source is `player.vimeo.com/video/<id>`, parse `window.playerConfig` from page HTML.
+  - Resolve signed DASH/HLS manifest URL from `request.files` and download from that manifest.
 - While running, each item shows a **Stop** button. It cancels the in-progress job and attempts to cancel any started Chrome download entry.
 - Filename rule:
-  - If page has `.lesson-title-value`, output filename is: `<lesson title> <video_id>.ts`
-  - If not found, output filename is: `<video_id>.ts`
-  - `video_id` is the last segment of the media key inside `/api/playlist/media/.../<resolution>`
+  - If page has `.lesson-title-value`, output filename is: `<lesson title> <video_id>.<ext>`
+  - If not found, output filename is: `<video_id>.<ext>`
+  - `<ext>` is `.ts` for custom playlists and `.mp4` for Vimeo manifests
+  - `video_id` is derived from playlist identity (`/api/playlist/media/.../<resolution>` or Vimeo manifest identifiers)
 
 Note: merge is done in extension memory before download starts, so very large videos can be memory-heavy.
 
