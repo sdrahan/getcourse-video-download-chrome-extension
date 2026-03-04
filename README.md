@@ -15,8 +15,7 @@ Captured URLs are shown in the popup with copy/download controls, lesson context
 1. Open `chrome://extensions`.
 2. Enable **Developer mode** (top-right).
 3. Click **Load unpacked**.
-4. Select this folder: `/Users/sdrahan/projects/getcourse-video-download-chrome-extension`.
-5. Pin the extension if desired.
+4. Select this directory.
 
 ## Quick Test
 
@@ -31,7 +30,7 @@ If you want to force a test quickly, trigger a request in any tab to a URL like:
 
 ## Where to Change Matching Logic
 
-- Main matcher and predicate: `/Users/sdrahan/projects/getcourse-video-download-chrome-extension/background.js`
+- Main matcher and predicate: `background.js`
 - Edit:
   - `passesVideoPredicate(urlString)` for the `"video"` condition
   - `parseMatchingInfo(urlString)` for path/query/resolution rules
@@ -47,8 +46,8 @@ If you want to force a test quickly, trigger a request in any tab to a URL like:
 
 ## Download Behavior (Built-in)
 
-- Download trigger/UI is in `/Users/sdrahan/projects/getcourse-video-download-chrome-extension/popup.js`.
-- Download execution runs in `/Users/sdrahan/projects/getcourse-video-download-chrome-extension/offscreen.js` (triggered by `/Users/sdrahan/projects/getcourse-video-download-chrome-extension/background.js`), so it continues even if popup closes.
+- Download trigger/UI is in `popup.js`.
+- Download execution runs in `offscreen.js` (triggered by `background.js`), so it continues even if popup closes.
 - It mirrors your Bash flow:
   - Fetch captured playlist URL.
   - If playlist contains direct segment links (`.ts`/`.bin`), use it directly.
