@@ -5,7 +5,7 @@ This extension passively observes outgoing requests and records playlist-media U
 - Path contains: `/api/playlist/media/` (host can vary)
 - Path ends with numeric resolution segment (example: `/360`, `/720`, `/1080`)
 - Query includes: `user-id`
-- URL also passes a configurable `"video"` predicate
+- Query includes `consumer=vod` (works across GetCourse CDN labels such as `cdnvideo` and `integrosproxy`)
 - Vimeo adaptive A/V manifest URLs: `https://*.vimeocdn.com/.../v2/playlist/av/.../playlist.json`
 
 Captured URLs are shown in the popup with copy/download controls, lesson context (when available), and item removal.
@@ -26,13 +26,13 @@ Captured URLs are shown in the popup with copy/download controls, lesson context
 5. Use **Copy** on any row, **Download** to assemble and save the video (`.ts` for custom playlists, `.mp4` for Vimeo manifests), **Stop** to interrupt an active download, **Remove** to delete a single item, or **Clear** to reset the session list.
 
 If you want to force a test quickly, trigger a request in any tab to a URL like:
-`https://example-cdn.test/api/playlist/media/abc/def/720?user-cdn=cdnvideo&user-id=123`
+`https://example-cdn.test/api/playlist/media/abc/def/720?consumer=vod&user-cdn=integrosproxy&user-id=123`
 
 ## Where to Change Matching Logic
 
 - Main matcher and predicate: `background.js`
 - Edit:
-  - `passesVideoPredicate(urlString)` for the `"video"` condition
+  - `passesVideoPredicate(parsedUrl)` for the VOD query condition
   - `parseMatchingInfo(urlString)` for path/query/resolution rules
 
 ## Storage + Badge Behavior

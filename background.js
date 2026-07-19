@@ -4,14 +4,13 @@ const MAX_ITEMS = 30;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const LESSON_TITLE_SELECTOR = ".lesson-title-value";
 
-// Configurable predicate: keep this focused on your "video" signal.
-const REQUIRED_SUBSTRING = "video";
-
 let storageUpdateQueue = Promise.resolve();
 let creatingOffscreenDocument = null;
 
-function passesVideoPredicate(urlString) {
-  return urlString.toLowerCase().includes(REQUIRED_SUBSTRING);
+// CDNs vary (for example, cdnvideo and integrosproxy). The stable GetCourse
+// signal is the VOD consumer together with the playlist path and user-id check.
+function passesVideoPredicate(parsedUrl) {
+  return parsedUrl.searchParams.get("consumer") === "vod";
 }
 
 function extractCustomMediaInfoFromPath(pathname) {
@@ -426,7 +425,7 @@ function parseMatchingInfo(urlString) {
       return null;
     }
 
-    if (!passesVideoPredicate(urlString)) {
+    if (!passesVideoPredicate(parsed)) {
       return null;
     }
 
