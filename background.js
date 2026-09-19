@@ -5,6 +5,7 @@ const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const LESSON_TITLE_SELECTOR = ".lesson-title-value";
 
 let storageUpdateQueue = Promise.resolve();
+let downloadStateUpdateQueue = Promise.resolve();
 let creatingOffscreenDocument = null;
 
 // CDNs vary (for example, cdnvideo and integrosproxy). The stable GetCourse
@@ -120,18 +121,30 @@ async function updateDownloadState(mediaKey, patch) {
     return;
   }
 
-  const stateMap = await getDownloadStateMap();
-  const current = isPlainObject(stateMap[mediaKey]) ? stateMap[mediaKey] : {};
-  stateMap[mediaKey] = {
-    ...current,
-    ...patch,
-    updatedAt: Date.now()
-  };
-  await chrome.storage.session.set({ [DOWNLOAD_STATE_KEY]: stateMap });
+  // Progress messages from multiple offscreen jobs can arrive together. Serialize
+  // read-modify-write updates so one job cannot erase another job's state.
+  const update = downloadStateUpdateQueue.then(async () => {
+    const stateMap = await getDownloadStateMap();
+    const current = isPlainObject(stateMap[mediaKey]) ? stateMap[mediaKey] : {};
+    stateMap[mediaKey] = {
+      ...current,
+      ...patch,
+      updatedAt: Date.now()
+    };
+    await chrome.storage.session.set({ [DOWNLOAD_STATE_KEY]: stateMap });
+  });
+  downloadStateUpdateQueue = update.catch((error) => {
+    console.error("Failed to update download state", error);
+  });
+  return update;
 }
 
 async function clearDownloadState() {
-  await chrome.storage.session.set({ [DOWNLOAD_STATE_KEY]: {} });
+  const clear = downloadStateUpdateQueue.then(() => chrome.storage.session.set({ [DOWNLOAD_STATE_KEY]: {} }));
+  downloadStateUpdateQueue = clear.catch((error) => {
+    console.error("Failed to clear download state", error);
+  });
+  return clear;
 }
 
 async function readLessonTitleFromTab(tabId) {
@@ -446,6 +459,12 @@ async function getCapturedItems() {
   return Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : [];
 }
 
+async function getLatestCapturedUrl(mediaKey, fallbackUrl) {
+  const items = await getCapturedItems();
+  const matchingItem = items.find((item) => item && item.mediaKey === mediaKey && typeof item.url === "string" && item.url);
+  return matchingItem ? matchingItem.url : fallbackUrl;
+}
+
 async function setCapturedItems(items) {
   await chrome.storage.session.set({ [STORAGE_KEY]: items });
 }
@@ -564,6 +583,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const pageUrl = typeof message.pageUrl === "string" ? message.pageUrl : "";
 
       const mediaKey = getMediaKeyFromUrl(urlString);
+      // Signed playlist URLs are refreshed while playback continues. Prefer the
+      // newest captured URL rather than the possibly stale popup row closure.
+      const downloadUrl = await getLatestCapturedUrl(mediaKey, urlString);
       await updateDownloadState(mediaKey, {
         state: "running",
         message: "Queued...",
@@ -573,7 +595,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       await ensureOffscreenDocument();
 
-      const mediaInfo = deriveMediaInfoFromUrl(urlString);
+      const mediaInfo = deriveMediaInfoFromUrl(downloadUrl);
       const vimeoPlayerPageUrl =
         mediaInfo && mediaInfo.sourceType === "vimeo" && Number.isInteger(tabId)
           ? await readVimeoPlayerPageUrlFromTab(tabId)
@@ -583,7 +605,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       await chrome.runtime.sendMessage({
         type: "OFFSCREEN_START_DOWNLOAD",
-        url: urlString,
+        url: downloadUrl,
         lessonTitle: typeof message.lessonTitle === "string" ? message.lessonTitle : "",
         vimeoPlayerPageUrl,
         pageUrl,
